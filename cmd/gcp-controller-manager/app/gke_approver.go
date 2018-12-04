@@ -673,6 +673,43 @@ func ensureNodeMatchesMetadataOrDelete(opts GCPConfig, csr *capi.CertificateSign
 }
 
 func shouldDeleteNode(opts GCPConfig, node *v1.Node) (bool, error) {
-	// TODO: return true if the Node API object does not match metadata and should be deleted
+	inst, err := getInstanceByName(opts, node.Name)
+	if err != nil {
+		glog.Errorf("Error retrieving instance %q: %v. Falling back to not deleting the node: %v", node.Name, err)
+		return false, nil
+	}
+	aliasRanges := getAliasRangesFromInstance(inst)
+	if len(aliasRanges) != 1 {
+		glog.Errorf("Got %d alias IP ranges from instance %q, expecting 1. Falling back to not deleting the node.", len(aliasRanges), inst.Name)
+	}
+	if aliasRanges[0] != node.Spec.PodCIDR {
+		glog.Infof("Instance %q has alias range %s that is different than node's podCIDR %s, will trigger node deletion.", inst.Name, aliasRanges[0], node.Spec.PodCIDR)
+		return true, nil
+	}
 	return false, nil
+}
+
+func getInstanceByName(opts GCPConfig, instanceName string) (*compute.Instance, error) {
+	srv := compute.NewInstancesService(opts.Compute)
+	for _, z := range opts.Zones {
+		inst, err := srv.Get(opts.ProjectID, z, instanceName).Do()
+		if err != nil {
+			if isNotFound(err) {
+				continue
+			}
+			return nil, err
+		}
+		return inst, nil
+	}
+	return nil, fmt.Errorf("instance not found")
+}
+
+func getAliasRangesFromInstance(inst *compute.Instance) []string {
+	var ranges []string
+	for _, networkInterface := range inst.NetworkInterfaces {
+		for _, r := range networkInterface.AliasIpRanges {
+			ranges = append(ranges, r.IpCidrRange)
+		}
+	}
+	return ranges
 }
